@@ -1,7 +1,8 @@
 ########################################################################
 # WebHDF server-side wsgi application
 import os
-import imp
+import importlib.util
+import importlib.machinery
 
 
 root_local = ""
@@ -9,7 +10,12 @@ url_webhdf = "webhdf.wsgi"
 
 try:
     script_path = os.path.dirname(os.path.abspath(__file__))
-    conf = imp.load_source("config", os.path.join(script_path, "config.py"))
+    _conf_spec = importlib.util.spec_from_loader(
+        "config",
+        importlib.machinery.SourceFileLoader("config", os.path.join(script_path, "config.py")),
+    )
+    conf = importlib.util.module_from_spec(_conf_spec)
+    _conf_spec.loader.exec_module(conf)
     root_local = conf.root_local
     url_webhdf = conf.url_webhdf
 except:
@@ -52,6 +58,21 @@ import json
 import itertools
 import tables
 
+class NumpyJSONEncoder(json.JSONEncoder):
+    """JSON encoder that knows how to serialize numpy scalar/array types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, bytes):
+            return obj.decode("utf-8", "replace")
+        return super().default(obj)
+
 def dtype2json(dtype):
     if not dtype.fields:
         return str(dtype)
@@ -74,7 +95,7 @@ def dset2json(dset):
 def response_file(path_local, fmt):
     if fmt == "raw":
         # return the raw h5 file
-        fname = os.path.basename(path_local).encode('utf-8')
+        fname = os.path.basename(path_local)
         res = FileApp(path_local,
                       content_disposition="attachment; filename=%s" % fname,
                       content_type="application/x-hdf")
@@ -113,7 +134,7 @@ def response_file(path_local, fmt):
             header["fname"] = os.path.basename(path_local)
 
             res = Response(content_type="application/json", charset="utf-8")
-            res.body = json.dumps(header, indent=4, separators=(',', ': '))
+            res.text = json.dumps(header, indent=4, separators=(',', ': '), cls=NumpyJSONEncoder)
             res.encode_content(encoding='gzip', lazy=True)
             return res
     else:
@@ -129,20 +150,20 @@ def response_dset(path_local, dset, fmt):
         # return the text representation from np.savetxt
         res = Response(content_type="text/plain", charset="utf-8")
         if dset.dtype.names:
-            res.body += "#"+" ".join(dset.dtype.names)+"\n"
+            res.body += ("#"+" ".join(dset.dtype.names)+"\n").encode("utf-8")
         np.savetxt(res.body_file, dset)
         res.encode_content(encoding='gzip', lazy=True)
         return res
     elif fmt == "py":
         # return python object representation of the data
         res = Response(content_type="text/plain", charset="utf-8")
-        res.body = repr(dset[:])
+        res.text = repr(dset[:])
         res.encode_content(encoding='gzip', lazy=True)
         return res
     elif fmt == "json":
         # return json representation
         res = Response(content_type="application/json", charset="utf-8")
-        res.body = json.dumps(dset[:].tolist())
+        res.text = json.dumps(dset[:].tolist(), cls=NumpyJSONEncoder)
         res.encode_content(encoding='gzip', lazy=True)
         return res
     elif fmt == "raw":
@@ -161,7 +182,7 @@ class DatasetIterator:
         self.dset = dset
 
     def num_bytes(self):
-        return np.prod(self.dset.shape) * self.dset.dtype.itemsize
+        return int(np.prod(self.dset.shape) * self.dset.dtype.itemsize)
 
     def __iter__(self):
         chunk_limit = 100 * 1024 # 100 KiB
@@ -181,11 +202,11 @@ class DatasetIterator:
             elem_size = dim_sizes[iter_dim] / shape[iter_dim]
             elems_per_chunk = int(np.ceil(float(chunk_limit))/float(elem_size))
             chunks_per_iter_dim = int(np.ceil(float(shape[iter_dim])/float(elems_per_chunk)))
-            
+
             # generate iterator over required dimensions
-            print dim_sizes, num_dims_below_limit
-            print "iterate over dim", iter_dim
-            print elems_per_chunk, chunks_per_iter_dim
+            print(dim_sizes, num_dims_below_limit)
+            print("iterate over dim", iter_dim)
+            print(elems_per_chunk, chunks_per_iter_dim)
             ranges = [range(shape[i]) for i in range(iter_dim-1)] + [range(chunks_per_iter_dim)]
             for select in itertools.product(*ranges):
                 from_ = select[-1] * elems_per_chunk
@@ -212,7 +233,7 @@ def webhdf_application(environ, start_response):
     if not fmt:
         # if no format was given, send page created from html template
         res = Response()
-        res.body = html_template.format(url_webhdf=url_webhdf, path=path)
+        res.text = html_template.format(url_webhdf=url_webhdf, path=path)
         return res(environ, start_response)
     if dset is None:
         # if no dataset was selected, return hdf in the given format

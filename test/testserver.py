@@ -1,8 +1,9 @@
 from wsgiref.simple_server import make_server
 from webob.dec import wsgify
 from webob.static import DirectoryApp
-import urlparse
-import imp
+import urllib.parse
+import importlib.util
+import importlib.machinery
 import os
 
 path_httpd_root = ""
@@ -15,7 +16,12 @@ path_test = os.path.dirname(os.path.abspath(__file__))
 path_webhdf = os.path.normpath(os.path.join(path_test, "..", "webhdf"))
 directory_webhdf_app = DirectoryApp(path_webhdf)
 # serve webhdf application
-webhdf = imp.load_source("webhdf", os.path.join(path_webhdf, "webhdf.wsgi"))
+_webhdf_spec = importlib.util.spec_from_loader(
+    "webhdf",
+    importlib.machinery.SourceFileLoader("webhdf", os.path.join(path_webhdf, "webhdf.wsgi")),
+)
+webhdf = importlib.util.module_from_spec(_webhdf_spec)
+_webhdf_spec.loader.exec_module(webhdf)
 webhdf.root_local = path_httpd_root
 webhdf.url_webhdf = "/_webhdf/webhdf.wsgi"
 webhdf_app = webhdf.application
@@ -33,13 +39,13 @@ def application(req):
     elif os.path.isdir(path_local):
         path_url = (path_url + "/").lstrip('/')
         dirs = [f for f in os.listdir(path_local) if os.path.isdir(os.path.join(path_local, f))]
-        dir_links = ["<a href='/{0}'>{1}</a>".format(urlparse.urljoin(path_url, d), d) for d in dirs]
+        dir_links = ["<a href='/{0}'>{1}</a>".format(urllib.parse.urljoin(path_url, d), d) for d in dirs]
         hdfs = [f for f in os.listdir(path_local) if (f.endswith(".h5") or f.endswith(".hdf5") or f.endswith(".hdf"))]
-        hdf_links = ["<a href='{2}?path=/{0}'>{1}</a>".format(urlparse.urljoin(path_url, f), f, webhdf.url_webhdf) for f in hdfs]
+        hdf_links = ["<a href='{2}?path=/{0}'>{1}</a>".format(urllib.parse.urljoin(path_url, f), f, webhdf.url_webhdf) for f in hdfs]
         return "<br/>\n".join(dir_links + hdf_links)
     else:
         return directory_root_app(req)
 
 httpd = make_server('', 8000, application)
-print "Serving on port 8000..."
+print("Serving on port 8000...")
 httpd.serve_forever()
